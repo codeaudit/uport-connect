@@ -5,6 +5,7 @@ import UportSubprovider from './uportSubprovider'
 const INFURA_ROPSTEN = 'https://ropsten.infura.io'
 // Can use http provider from ethjs in the future.
 import HttpProvider from 'web3/lib/web3/httpprovider'
+import { isMNID, encode } from 'mnid'
 
 /**
 *  Primary object for frontend interactions with uPort. ConnectCore excludes
@@ -16,6 +17,7 @@ import HttpProvider from 'web3/lib/web3/httpprovider'
 *  mobile native app QR generation is not even necessary.
 *
 */
+
 class ConnectCore {
 
   /**
@@ -29,7 +31,7 @@ class ConnectCore {
    * @param       {Object}            opts.credentials       pre-configured Credentials object from http://github.com/uport-project/uport-js object. Configure this if you need to create signed requests
    * @param       {Function}          opts.signer            signing function which will be used to sign JWT's in the credentials object
    * @param       {String}            opts.clientId          uport identifier for your application this will be used in the default credentials object
-   * @param       {String}            opts.rpcUrl            JSON rpc url (defaults to https://ropsten.infura.io)
+   * @param       {Object}            [opts.network='kovan'] network config object or string name, ie. { id: '0x1', registry: '0xab5c8051b9a1df1aab0149f8b0630848b7ecabf6', rpcUrl: 'https://mainnet.infura.io' } or 'kovan', 'mainnet', 'ropsten'.
    * @param       {String}            opts.infuraApiKey      Infura API Key (register here http://infura.io/register.html)
    * @param       {Function}          opts.topicFactory      function which generates topics and deals with requests and response
    * @param       {Function}          opts.uriHandler        default function to consume generated URIs for requests, can be used to display QR codes or other custom UX
@@ -37,19 +39,22 @@ class ConnectCore {
    * @param       {Function}          opts.closeUriHandler   default function called after a request receives a response, can be to close QR codes or other custom UX
    * @return      {Connect}                                  self
    */
+
   constructor (appName, opts = {}) {
     this.appName = appName || 'uport-connect-app'
     this.infuraApiKey = opts.infuraApiKey || this.appName.replace(/\W+/g, '-')
     this.clientId = opts.clientId
-
-    this.rpcUrl = opts.rpcUrl || (INFURA_ROPSTEN + '/' + this.infuraApiKey)
     this.provider = opts.provider
     this.isOnMobile = opts.isMobile === undefined ? isMobile() : opts.isMobile
     this.topicFactory = opts.topicFactory || TopicFactory(this.isOnMobile)
     this.uriHandler = opts.uriHandler || defaultUriHandler
     this.mobileUriHandler = opts.mobileUriHandler
     this.closeUriHandler = opts.closeUriHandler
-    this.credentials = opts.credentials || new Credentials({address: opts.clientId, signer: opts.signer})
+    this.credentials = opts.credentials || new Credentials({address: opts.clientId, signer: opts.signer, network: opts.network})
+    if (opts.network && opts.credentials && (opts.credentials.network !== opts.network)) {
+      throw new Error('Passed credentials object and network object where the networks do not match.')
+    }
+    this.network = this.credentials.net
     this.canSign = !!this.credentials.settings.signer && !!this.credentials.settings.address
     this.pushToken = null
   }
@@ -67,7 +72,7 @@ class ConnectCore {
     return new UportSubprovider({
       requestAddress: this.requestAddress.bind(this),
       sendTransaction: this.sendTransaction.bind(this),
-      provider: this.provider || new HttpProvider(this.rpcUrl)
+      provider: this.provider || new HttpProvider(this.network.rpcUrl)
     })
   }
 
@@ -88,7 +93,6 @@ class ConnectCore {
    *  @param    {Function}                [uriHandler=this.uriHandler]    function to consume uri, can be used to display QR codes or other custom UX
    *  @return   {Promise<Object, Error>}                                  a promise which resolves with a response object or rejects with an error.
    */
-  //  TODO add more docs on request objects and response objects
   requestCredentials (request = {}, uriHandler = this.uriHandler) {
     const self = this
     const receive = this.credentials.receive.bind(this.credentials)
@@ -207,7 +211,10 @@ class ConnectCore {
   *  @return   {Object}                                             contract object
   */
   contract (abi) {
-    const txObjectHandler = (methodTxObject, uriHandler) => this.sendTransaction(methodTxObject, uriHandler)
+    const txObjectHandler = (methodTxObject, uriHandler) => {
+      methodTxObject.to = isMNID(methodTxObject) ? methodTxObject : encode({network: this.network.id, address: methodTxObject})
+      this.sendTransaction(methodTxObject, uriHandler)
+    }
     return new ContractFactory(txObjectHandler)(abi)
   }
 
@@ -256,6 +263,9 @@ class ConnectCore {
     if (this.clientId) {
       appTxObject.client_id = this.clientId
     }
+    if (txObject.to == 'me') {
+      appTxObject.network_id = this.network.id
+    }
     return appTxObject
   }
 }
@@ -281,7 +291,7 @@ const paramsToUri = (params) => {
   } else if (params.data) {
     pairs.push(['bytecode', params.data])
   }
-  ['label', 'callback_url', 'client_id'].map(param => {
+  ['label', 'callback_url', 'client_id', 'network_id'].map(param => {
     if (params[param]) {
       pairs.push([param, params[param]])
     }
@@ -309,7 +319,6 @@ function isMobile () {
  *  @return   {Error}             Throws Error
  *  @private
  */
- // TODO change to URI
 function defaultUriHandler (uri) {
   throw new Error(`No Url handler set to handle ${uri}`)
 }
